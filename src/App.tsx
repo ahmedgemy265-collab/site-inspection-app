@@ -77,6 +77,36 @@ async function deleteInspectionRow(id) {
   await sbFetch(`inspections?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// ---------- Auth (login system) ----------
+async function sbRpc(fnName, params = {}) {
+  return sbFetch(`rpc/${fnName}`, { method: "POST", body: JSON.stringify(params) });
+}
+async function loginRequest(username, password) {
+  const rows = await sbRpc("login", { p_username: username, p_password: password });
+  if (!rows || !rows.length) return null;
+  return rows[0]; // { session_token, user_id, full_name, role }
+}
+async function whoamiRequest(token) {
+  const rows = await sbRpc("whoami", { p_token: token });
+  if (!rows || !rows.length) return null;
+  return rows[0];
+}
+async function logoutRequest(token) {
+  await sbRpc("logout", { p_token: token });
+}
+async function adminListEngineers(token) {
+  return sbRpc("admin_list_engineers", { p_token: token });
+}
+async function adminCreateEngineer(token, username, fullName) {
+  return sbRpc("admin_create_engineer", { p_token: token, p_username: username, p_full_name: fullName });
+}
+async function adminResetPassword(token, targetId) {
+  return sbRpc("admin_reset_password", { p_token: token, p_target_id: targetId });
+}
+async function adminDeleteEngineer(token, targetId) {
+  return sbRpc("admin_delete_engineer", { p_token: token, p_target_id: targetId });
+}
+
 // ---------- UI atoms ----------
 function CornerFrame({ children, className = "" }) {
   return (
@@ -97,9 +127,7 @@ function Field({ label, icon: Icon, children }) {
 }
 
 export default function SiteInspectionApp() {
-  const [role, setRole] = useState("engineer"); // 'engineer' | 'admin'
-  const [engineerName, setEngineerName] = useState("");
-  const [nameDraft, setNameDraft] = useState("");
+  const [session, setSession] = useState(null); // { token, userId, fullName, role } | null
   const [booting, setBooting] = useState(true);
   const [inspections, setInspections] = useState([]);
   const [view, setView] = useState("list"); // list | form | detail
@@ -109,12 +137,19 @@ export default function SiteInspectionApp() {
   const [search, setSearch] = useState("");
   const [engFilter, setEngFilter] = useState("all");
 
-  // boot: load stored engineer name + all inspections
+  // boot: validate stored session token + load all inspections
   useEffect(() => {
     (async () => {
       try {
-        const saved = localStorage.getItem("engineer-name");
-        if (saved) setEngineerName(saved);
+        const token = localStorage.getItem("session-token");
+        if (token) {
+          const who = await whoamiRequest(token);
+          if (who) {
+            setSession({ token, userId: who.user_id, fullName: who.full_name, role: who.role });
+          } else {
+            localStorage.removeItem("session-token");
+          }
+        }
       } catch {}
       await refreshAll();
       setBooting(false);
@@ -130,9 +165,18 @@ export default function SiteInspectionApp() {
     }
   }, []);
 
-  function setName(n) {
-    setEngineerName(n);
-    try { localStorage.setItem("engineer-name", n); } catch {}
+  async function handleLogin(username, password) {
+    const result = await loginRequest(username, password);
+    if (!result) throw new Error("اسم المستخدم أو الباسورد غير صحيح");
+    const s = { token: result.session_token, userId: result.user_id, fullName: result.full_name, role: result.role };
+    setSession(s);
+    try { localStorage.setItem("session-token", s.token); } catch {}
+  }
+  function handleLogout() {
+    if (session?.token) logoutRequest(session.token).catch(() => {});
+    setSession(null);
+    try { localStorage.removeItem("session-token"); } catch {}
+    setView("list");
   }
 
   function openNew() {
@@ -174,7 +218,7 @@ export default function SiteInspectionApp() {
     }
   }
 
-  const myInspections = inspections.filter((i) => i.engineerName === engineerName);
+  const myInspections = inspections.filter((i) => i.engineerName === session?.fullName);
   const engineers = Array.from(new Set(inspections.map((i) => i.engineerName))).filter(Boolean);
   const filteredForAdmin = inspections.filter((i) => {
     const matchSearch = !search || i.siteName?.toLowerCase().includes(search.toLowerCase());
@@ -248,7 +292,28 @@ export default function SiteInspectionApp() {
         }
         .role-switch button.active { background: var(--accent); color: #fff; }
 
+        .user-bar { display: flex; align-items: center; gap: 10px; }
+        .user-name { color: rgba(255,255,255,0.85); font-size: 13px; font-weight: 700; }
+        .btn-sm { padding: 6px 11px; font-size: 12.5px; }
+
         .container { max-width: 920px; margin: 0 auto; padding: 20px 16px 60px; }
+
+        .user-create-box { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; background: var(--paper-2); border: 1px solid var(--line); padding: 14px; }
+        .user-create-box input { flex: 1; min-width: 160px; padding: 10px 12px; border: 1.5px solid var(--line); font-family: 'Tajawal'; font-size: 13.5px; }
+        .user-create-box input:focus { outline: none; border-color: var(--accent); }
+        .user-list { display: flex; flex-direction: column; gap: 8px; }
+        .user-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--paper-2); border: 1px solid var(--line); padding: 12px 14px; flex-wrap: wrap; }
+        .user-row-info { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+        .user-row-username { color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+        .badge-admin { background: rgba(232,98,44,0.12); color: var(--accent); font-size: 10.5px; font-weight: 800; padding: 2px 8px; }
+        .user-row-actions { display: flex; gap: 6px; }
+
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(15,33,54,0.6); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+        .modal-box { background: #fff; max-width: 360px; width: 100%; padding: 22px; text-align: center; }
+        .modal-box h3 { margin: 0 0 10px; font-size: 16px; }
+        .modal-box p { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+        .password-reveal { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 700; letter-spacing: 2px; background: rgba(0,0,0,0.05); padding: 12px; margin-bottom: 10px; }
+        .modal-box .hint { font-size: 11.5px; color: var(--danger); }
 
         .name-gate {
           max-width: 380px; margin: 60px auto; background: var(--paper-2);
@@ -380,35 +445,43 @@ export default function SiteInspectionApp() {
               <p>SITE INSPECTION LOG — FIRE PROTECTION</p>
             </div>
           </div>
-          <div className="role-switch">
-            <button className={role === "engineer" ? "active" : ""} onClick={() => { setRole("engineer"); setView("list"); }}>
-              <User size={14} /> مهندس
-            </button>
-            <button className={role === "admin" ? "active" : ""} onClick={() => { setRole("admin"); setView("list"); }}>
-              <LayoutDashboard size={14} /> إدارة
-            </button>
-          </div>
+          {session && (
+            <div className="user-bar">
+              {session.role === "admin" && (
+                <div className="role-switch">
+                  <button className={view !== "users" ? "active" : ""} onClick={() => setView("list")}>
+                    <LayoutDashboard size={14} /> المعاينات
+                  </button>
+                  <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}>
+                    <Users size={14} /> المهندسين
+                  </button>
+                </div>
+              )}
+              <span className="user-name">{session.fullName}</span>
+              <button className="btn btn-ghost btn-sm" onClick={handleLogout}>خروج</button>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="container">
         {booting ? (
           <div className="boot-loading"><Loader2 className="spin" size={26} /> جارِ تحميل البيانات…</div>
-        ) : role === "engineer" && !engineerName ? (
-          <NameGate nameDraft={nameDraft} setNameDraft={setNameDraft} onConfirm={() => nameDraft.trim() && setName(nameDraft.trim())} />
-        ) : role === "engineer" ? (
+        ) : !session ? (
+          <LoginScreen onLogin={handleLogin} />
+        ) : session.role === "engineer" ? (
           <>
             {view === "list" && (
               <EngineerList
-                engineerName={engineerName}
+                engineerName={session.fullName}
                 items={myInspections}
                 onOpen={openDetail}
-                onSwitchUser={() => { setName(""); }}
+                onSwitchUser={handleLogout}
               />
             )}
             {view === "form" && (
               <InspectionForm
-                engineerName={engineerName}
+                engineerName={session.fullName}
                 initial={activeInspection}
                 saving={saving}
                 err={err}
@@ -419,7 +492,7 @@ export default function SiteInspectionApp() {
             {view === "detail" && activeInspection && (
               <InspectionDetail
                 insp={activeInspection}
-                canEdit={activeInspection.engineerName === engineerName}
+                canEdit={activeInspection.engineerName === session.fullName}
                 onBack={() => setView("list")}
                 onEdit={() => openEdit(activeInspection.id)}
                 onDelete={() => handleDelete(activeInspection.id)}
@@ -429,6 +502,8 @@ export default function SiteInspectionApp() {
               <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> معاينة جديدة</button>
             )}
           </>
+        ) : view === "users" ? (
+          <AdminUsers token={session.token} />
         ) : (
           <>
             {view !== "detail" && (
@@ -467,19 +542,160 @@ export default function SiteInspectionApp() {
   );
 }
 
-function NameGate({ nameDraft, setNameDraft, onConfirm }) {
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function submit() {
+    if (!username.trim() || !password) return;
+    setLoading(true);
+    setErr("");
+    try {
+      await onLogin(username.trim(), password);
+    } catch (e) {
+      setErr(e.message || "بيانات الدخول غير صحيحة");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="name-gate">
       <User size={26} color="#E8622C" />
-      <h2>اكتب اسمك للبدء</h2>
-      <p>هيتربط اسمك بكل المعاينات اللي هترفعها</p>
+      <h2>تسجيل الدخول</h2>
+      <p>ادخل اسم المستخدم والباسورد اللي معاك</p>
+      {err && <div className="err-banner"><AlertCircle size={16} /> {err}</div>}
       <input
-        placeholder="اسم المهندس"
-        value={nameDraft}
-        onChange={(e) => setNameDraft(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && onConfirm()}
+        placeholder="اسم المستخدم"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
       />
-      <button className="btn btn-primary btn-block" onClick={onConfirm}>دخول <ArrowRight size={15} /></button>
+      <input
+        type="password"
+        placeholder="الباسورد"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <button className="btn btn-primary btn-block" disabled={loading} onClick={submit}>
+        {loading ? <Loader2 className="spin" size={15} /> : <>دخول <ArrowRight size={15} /></>}
+      </button>
+    </div>
+  );
+}
+
+function AdminUsers({ token }) {
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newFullName, setNewFullName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [revealPassword, setRevealPassword] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const rows = await adminListEngineers(token);
+      setList(rows || []);
+    } catch (e) {
+      setErr("تعذر تحميل قائمة المهندسين");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate() {
+    if (!newUsername.trim() || !newFullName.trim()) return;
+    setCreating(true);
+    setErr("");
+    try {
+      const password = await adminCreateEngineer(token, newUsername.trim(), newFullName.trim());
+      setRevealPassword({ username: newUsername.trim(), password });
+      setNewUsername(""); setNewFullName("");
+      await load();
+    } catch (e) {
+      setErr("تعذر إضافة المهندس، ممكن اسم المستخدم مستخدم بالفعل");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleReset(id, username) {
+    if (!window.confirm(`توليد باسورد جديد لـ ${username}؟ الباسورد القديم هيبقى ملغي`)) return;
+    try {
+      const password = await adminResetPassword(token, id);
+      setRevealPassword({ username, password });
+    } catch (e) {
+      setErr("تعذر توليد باسورد جديد");
+    }
+  }
+
+  async function handleDelete(id, username) {
+    if (!window.confirm(`هل تريد حذف المهندس ${username} نهائياً؟`)) return;
+    try {
+      await adminDeleteEngineer(token, id);
+      await load();
+    } catch (e) {
+      setErr("تعذر حذف المهندس");
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-head">
+        <h2><Users size={16} /> إدارة المهندسين</h2>
+      </div>
+
+      {err && <div className="err-banner"><AlertCircle size={16} /> {err}</div>}
+
+      <div className="user-create-box">
+        <input placeholder="اسم المستخدم (بالإنجليزي)" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+        <input placeholder="الاسم الكامل" value={newFullName} onChange={(e) => setNewFullName(e.target.value)} />
+        <button className="btn btn-primary" disabled={creating} onClick={handleCreate}>
+          {creating ? <Loader2 className="spin" size={15} /> : <Plus size={15} />} إضافة مهندس
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="boot-loading"><Loader2 className="spin" size={22} /> جارِ التحميل…</div>
+      ) : (
+        <div className="user-list">
+          {list.map((u) => (
+            <div className="user-row" key={u.id}>
+              <div className="user-row-info">
+                <strong>{u.full_name}</strong>
+                <span className="user-row-username">{u.username}</span>
+                {u.role === "admin" && <span className="badge-admin">أدمن</span>}
+              </div>
+              {u.role !== "admin" && (
+                <div className="user-row-actions">
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleReset(u.id, u.username)}>باسورد جديد</button>
+                  <button className="btn btn-danger btn-sm" onClick={() => handleDelete(u.id, u.username)}><Trash2 size={14} /></button>
+                </div>
+              )}
+            </div>
+          ))}
+          {!list.length && <p style={{ color: "var(--muted)", fontSize: 13.5 }}>لا يوجد مهندسين مضافين بعد</p>}
+        </div>
+      )}
+
+      {revealPassword && (
+        <div className="modal-backdrop" onClick={() => setRevealPassword(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <h3>تم توليد باسورد جديد</h3>
+            <p>ابعت البيانات دي للمهندس (اسم المستخدم: <b>{revealPassword.username}</b>):</p>
+            <div className="password-reveal">{revealPassword.password}</div>
+            <p className="hint">الباسورد ده مش هيتعرض تاني، انسخه دلوقتي</p>
+            <button className="btn btn-primary btn-block" onClick={() => setRevealPassword(null)}>تم</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
