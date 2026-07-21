@@ -3,6 +3,7 @@ import {
   Camera, FileImage, Ruler, MessageSquare, Plus, Trash2, MapPin, User,
   Calendar, ChevronRight, X, Search, LayoutDashboard, ClipboardList,
   Building2, ArrowRight, Check, Upload, Loader2, AlertCircle, Users,
+  FileText, Download,
 } from "lucide-react";
 
 // ---------- helpers ----------
@@ -12,6 +13,11 @@ const fmtDate = (d) => {
   try {
     return new Date(d).toLocaleDateString("ar-EG", { year: "numeric", month: "short", day: "numeric" });
   } catch { return d; }
+};
+const fmtFileSize = (bytes) => {
+  if (!bytes) return "";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
 function compressImage(file, maxDim = 1000, quality = 0.62) {
@@ -75,6 +81,32 @@ async function upsertInspection(record) {
 }
 async function deleteInspectionRow(id) {
   await sbFetch(`inspections?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+const DOCS_BUCKET = "inspection-files";
+async function uploadDocumentToStorage(file) {
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+  const path = `${uid()}-${Date.now()}.${ext}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${DOCS_BUCKET}/${path}`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": file.type || "application/octet-stream",
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`تعذر رفع الملف: ${text}`);
+  }
+  return {
+    id: uid(),
+    name: file.name,
+    ext,
+    size: file.size,
+    url: `${SUPABASE_URL}/storage/v1/object/public/${DOCS_BUCKET}/${path}`,
+  };
 }
 
 // ---------- Auth (login system) ----------
@@ -314,6 +346,14 @@ export default function SiteInspectionApp() {
         .modal-box p { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
         .password-reveal { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 700; letter-spacing: 2px; background: rgba(0,0,0,0.05); padding: 12px; margin-bottom: 10px; }
         .modal-box .hint { font-size: 11.5px; color: var(--danger); }
+
+        .doc-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+        .doc-row { display: flex; align-items: center; gap: 10px; background: var(--paper-2); border: 1px solid var(--line); padding: 9px 12px; color: var(--ink); text-decoration: none; }
+        .doc-row-link { cursor: pointer; }
+        .doc-row-link:hover { border-color: var(--accent); }
+        .doc-row-info { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+        .doc-row-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .doc-row-size { font-size: 11px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
 
         .name-gate {
           max-width: 380px; margin: 60px auto; background: var(--paper-2);
@@ -829,6 +869,24 @@ function InspectionDetail({ insp, canEdit, onBack, onEdit, onDelete }) {
         </div>
       )}
 
+      {insp.documents?.length > 0 && (
+        <div className="detail-section">
+          <h3><FileText size={13} /> المرفقات ({insp.documents.length})</h3>
+          <div className="doc-list">
+            {insp.documents.map((d) => (
+              <a className="doc-row doc-row-link" key={d.id} href={d.url} target="_blank" rel="noreferrer">
+                <FileText size={16} />
+                <div className="doc-row-info">
+                  <span className="doc-row-name">{d.name}</span>
+                  <span className="doc-row-size">{fmtFileSize(d.size)}</span>
+                </div>
+                <Download size={15} />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {insp.measurements?.length > 0 && (
         <div className="detail-section">
           <h3><Ruler size={13} /> المقاسات</h3>
@@ -857,7 +915,7 @@ function InspectionDetail({ insp, canEdit, onBack, onEdit, onDelete }) {
         </div>
       )}
 
-      {!insp.photos?.length && !insp.drawings?.length && !insp.measurements?.length && !insp.requests && !insp.notes && (
+      {!insp.photos?.length && !insp.drawings?.length && !insp.documents?.length && !insp.measurements?.length && !insp.requests && !insp.notes && (
         <div className="empty-state"><p>مفيش تفاصيل مسجلة في المعاينة دي</p></div>
       )}
     </div>
@@ -870,13 +928,30 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
   const [location, setLocation] = useState(initial?.location || "");
   const [photos, setPhotos] = useState(initial?.photos || []);
   const [drawings, setDrawings] = useState(initial?.drawings || []);
+  const [documents, setDocuments] = useState(initial?.documents || []);
   const [measurements, setMeasurements] = useState(initial?.measurements || []);
   const [requests, setRequests] = useState(initial?.requests || "");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [uploading, setUploading] = useState(false);
+  const [docUploading, setDocUploading] = useState(false);
   const [localErr, setLocalErr] = useState("");
   const photoInput = useRef(null);
   const drawInput = useRef(null);
+  const docInput = useRef(null);
+
+  async function handleDocFiles(files) {
+    setDocUploading(true);
+    setLocalErr("");
+    try {
+      const arr = Array.from(files).slice(0, 10);
+      const results = await Promise.all(arr.map((f) => uploadDocumentToStorage(f)));
+      setDocuments((prev) => [...prev, ...results]);
+    } catch (e) {
+      setLocalErr(e.message || "تعذر رفع أحد الملفات");
+    } finally {
+      setDocUploading(false);
+    }
+  }
 
   async function handleFiles(files, setter) {
     setUploading(true);
@@ -909,7 +984,7 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
       engineerName: initial?.engineerName || engineerName,
       siteName: siteName.trim(),
       date, location: location.trim(),
-      photos, drawings,
+      photos, drawings, documents,
       measurements: measurements.filter((m) => m.label.trim() || m.value.toString().trim()),
       requests: requests.trim(), notes: notes.trim(),
       createdAt: initial?.createdAt || Date.now(),
@@ -974,6 +1049,35 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
               <img src={p.dataUrl} alt="" />
               <button className="rm" onClick={() => setDrawings((ps) => ps.filter((x) => x.id !== p.id))}><X size={12} /></button>
               <input placeholder="وصف الرسم" value={p.caption} onChange={(e) => setDrawings((ps) => ps.map((x) => x.id === p.id ? { ...x, caption: e.target.value } : x))} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <hr className="divider" />
+      <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: 1, color: "#5B6B76", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, marginBottom: 10 }}>
+        <FileText size={13} style={{ verticalAlign: "-2px", marginLeft: 6 }} />المرفقات
+      </h3>
+      <div className="upload-zone" onClick={() => docInput.current?.click()}>
+        {docUploading ? <Loader2 className="spin" size={20} style={{ marginBottom: 6 }} /> : <Upload size={20} style={{ marginBottom: 6 }} />}
+        <br />
+        ارفع ملفات Word أو Excel أو PDF أو DWG
+        <input
+          ref={docInput} type="file" multiple hidden
+          accept=".doc,.docx,.xls,.xlsx,.pdf,.dwg,.dxf"
+          onChange={(e) => e.target.files.length && handleDocFiles(e.target.files)}
+        />
+      </div>
+      {documents.length > 0 && (
+        <div className="doc-list">
+          {documents.map((d) => (
+            <div className="doc-row" key={d.id}>
+              <FileText size={16} />
+              <div className="doc-row-info">
+                <span className="doc-row-name">{d.name}</span>
+                <span className="doc-row-size">{fmtFileSize(d.size)}</span>
+              </div>
+              <button className="rm" onClick={() => setDocuments((ds) => ds.filter((x) => x.id !== d.id))}><X size={13} /></button>
             </div>
           ))}
         </div>
