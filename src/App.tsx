@@ -546,7 +546,7 @@ export default function SiteInspectionApp() {
           <AdminUsers token={session.token} />
         ) : (
           <>
-            {view !== "detail" && (
+            {view === "list" && (
               <AdminDashboard
                 items={inspections}
                 filtered={filteredForAdmin}
@@ -555,6 +555,9 @@ export default function SiteInspectionApp() {
                 engFilter={engFilter} setEngFilter={setEngFilter}
                 onOpen={openDetail}
               />
+            )}
+            {view === "list" && (
+              <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> معاينة جديدة</button>
             )}
             {view === "detail" && activeInspection && (
               <InspectionDetail
@@ -567,7 +570,7 @@ export default function SiteInspectionApp() {
             )}
             {view === "form" && (
               <InspectionForm
-                engineerName={activeInspection?.engineerName || engineers[0] || ""}
+                engineerName={activeInspection?.engineerName || session.fullName}
                 initial={activeInspection}
                 saving={saving}
                 err={err}
