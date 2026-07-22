@@ -83,6 +83,21 @@ async function deleteInspectionRow(id) {
   await sbFetch(`inspections?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+async function fetchAllRequests() {
+  const rows = await sbFetch("requests?select=id,data&order=created_at.desc");
+  return (rows || []).map((r) => ({ ...r.data, id: r.id }));
+}
+async function upsertRequest(record) {
+  await sbFetch("requests", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify([{ id: record.id, data: record }]),
+  });
+}
+async function deleteRequestRow(id) {
+  await sbFetch(`requests?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 const DOCS_BUCKET = "inspection-files";
 async function uploadDocumentToStorage(file) {
   const ext = (file.name.split(".").pop() || "bin").toLowerCase();
@@ -162,7 +177,8 @@ export default function SiteInspectionApp() {
   const [session, setSession] = useState(null); // { token, userId, fullName, role } | null
   const [booting, setBooting] = useState(true);
   const [inspections, setInspections] = useState([]);
-  const [view, setView] = useState("list"); // list | form | detail
+  const [requests, setRequests] = useState([]);
+  const [view, setView] = useState("list"); // list | form | detail | requests | requestForm | users
   const [activeId, setActiveId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -178,6 +194,7 @@ export default function SiteInspectionApp() {
           const who = await whoamiRequest(token);
           if (who) {
             setSession({ token, userId: who.user_id, fullName: who.full_name, role: who.role });
+            if (who.role === "followup") setView("requests");
           } else {
             localStorage.removeItem("session-token");
           }
@@ -195,6 +212,12 @@ export default function SiteInspectionApp() {
     } catch (e) {
       setErr("تعذر الاتصال بقاعدة البيانات، تأكد من الإنترنت وحاول تاني");
     }
+    try {
+      const reqs = await fetchAllRequests();
+      setRequests(reqs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    } catch (e) {
+      // silent: not all roles depend on requests loading successfully on first paint
+    }
   }, []);
 
   async function handleLogin(username, password) {
@@ -202,6 +225,7 @@ export default function SiteInspectionApp() {
     if (!result) throw new Error("اسم المستخدم أو الباسورد غير صحيح");
     const s = { token: result.session_token, userId: result.user_id, fullName: result.full_name, role: result.role };
     setSession(s);
+    setView(s.role === "followup" ? "requests" : "list");
     try { localStorage.setItem("session-token", s.token); } catch {}
   }
   function handleLogout() {
@@ -222,6 +246,9 @@ export default function SiteInspectionApp() {
   function openEdit(id) {
     setActiveId(id);
     setView("form");
+  }
+  function openNewRequest() {
+    setView("requestForm");
   }
 
   async function handleDelete(id) {
@@ -250,6 +277,41 @@ export default function SiteInspectionApp() {
     }
   }
 
+  async function handleSaveRequest(record) {
+    setSaving(true);
+    setErr("");
+    try {
+      await upsertRequest(record);
+      await refreshAll();
+      setView("requests");
+    } catch (e) {
+      setErr("حدث خطأ أثناء حفظ الطلب، تأكد من الإنترنت وحاول مرة أخرى");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAssignRequest(id, engineerNameOrNull) {
+    const target = requests.find((r) => r.id === id);
+    if (!target) return;
+    try {
+      await upsertRequest({ ...target, assignedEngineer: engineerNameOrNull });
+      await refreshAll();
+    } catch (e) {
+      setErr("تعذر تحديث تخصيص الطلب");
+    }
+  }
+
+  async function handleDeleteRequest(id) {
+    if (!window.confirm("هل تريد حذف هذا الطلب نهائياً؟")) return;
+    try {
+      await deleteRequestRow(id);
+      await refreshAll();
+    } catch (e) {
+      setErr("تعذر حذف الطلب");
+    }
+  }
+
   const myInspections = inspections.filter((i) => i.engineerName === session?.fullName);
   const engineers = Array.from(new Set(inspections.map((i) => i.engineerName))).filter(Boolean);
   const filteredForAdmin = inspections.filter((i) => {
@@ -257,6 +319,9 @@ export default function SiteInspectionApp() {
     const matchEng = engFilter === "all" || i.engineerName === engFilter;
     return matchSearch && matchEng;
   });
+  const requestsForEngineer = requests.filter(
+    (r) => !r.assignedEngineer || r.assignedEngineer === session?.fullName
+  );
 
   const activeInspection = activeId ? inspections.find((i) => i.id === activeId) : null;
 
@@ -333,11 +398,26 @@ export default function SiteInspectionApp() {
         .user-create-box { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; background: var(--paper-2); border: 1px solid var(--line); padding: 14px; }
         .user-create-box input { flex: 1; min-width: 160px; padding: 10px 12px; border: 1.5px solid var(--line); font-family: 'Tajawal'; font-size: 13.5px; }
         .user-create-box input:focus { outline: none; border-color: var(--accent); }
+        .user-create-box select { padding: 10px 12px; border: 1.5px solid var(--line); font-family: 'Tajawal'; font-size: 13.5px; background: #fff; }
         .user-list { display: flex; flex-direction: column; gap: 8px; }
         .user-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--paper-2); border: 1px solid var(--line); padding: 12px 14px; flex-wrap: wrap; }
         .user-row-info { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
         .user-row-username { color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
         .badge-admin { background: rgba(232,98,44,0.12); color: var(--accent); font-size: 10.5px; font-weight: 800; padding: 2px 8px; }
+
+        .req-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+        .req-row { background: var(--paper-2); border: 1px solid var(--line); padding: 14px; }
+        .req-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+        .req-row-head strong { font-size: 14.5px; }
+        .badge-assigned { background: rgba(15,33,54,0.08); color: var(--ink); font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
+        .badge-unassigned { background: rgba(232,98,44,0.12); color: var(--accent); font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
+        .req-row-body { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+        .req-row-body span { display: inline-flex; align-items: center; gap: 4px; }
+        .req-notes { font-size: 13px; color: var(--ink); background: rgba(0,0,0,0.03); padding: 8px 10px; margin: 6px 0; }
+        .req-row-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+        .req-meta { font-size: 11px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+        .req-admin-actions { display: flex; align-items: center; gap: 6px; }
+        .req-admin-actions select { padding: 7px 9px; border: 1.5px solid var(--line); font-family: 'Tajawal'; font-size: 12.5px; background: #fff; }
         .user-row-actions { display: flex; gap: 6px; }
 
         .modal-backdrop { position: fixed; inset: 0; background: rgba(15,33,54,0.6); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
@@ -489,11 +569,24 @@ export default function SiteInspectionApp() {
             <div className="user-bar">
               {session.role === "admin" && (
                 <div className="role-switch">
-                  <button className={view !== "users" ? "active" : ""} onClick={() => setView("list")}>
+                  <button className={view !== "users" && view !== "requests" && view !== "requestForm" ? "active" : ""} onClick={() => setView("list")}>
                     <LayoutDashboard size={14} /> المعاينات
+                  </button>
+                  <button className={view === "requests" || view === "requestForm" ? "active" : ""} onClick={() => setView("requests")}>
+                    <ClipboardList size={14} /> الطلبات
                   </button>
                   <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}>
                     <Users size={14} /> المهندسين
+                  </button>
+                </div>
+              )}
+              {session.role === "engineer" && (
+                <div className="role-switch">
+                  <button className={view !== "requests" ? "active" : ""} onClick={() => setView("list")}>
+                    <LayoutDashboard size={14} /> معايناتي
+                  </button>
+                  <button className={view === "requests" ? "active" : ""} onClick={() => setView("requests")}>
+                    <ClipboardList size={14} /> طلبات المعاينة
                   </button>
                 </div>
               )}
@@ -509,6 +602,28 @@ export default function SiteInspectionApp() {
           <div className="boot-loading"><Loader2 className="spin" size={26} /> جارِ تحميل البيانات…</div>
         ) : !session ? (
           <LoginScreen onLogin={handleLogin} />
+        ) : session.role === "followup" ? (
+          <>
+            {view === "requestForm" ? (
+              <RequestForm
+                createdBy={session.fullName}
+                saving={saving}
+                err={err}
+                onCancel={() => setView("requests")}
+                onSave={handleSaveRequest}
+              />
+            ) : (
+              <>
+                <RequestsList
+                  mode="followup"
+                  items={requests}
+                  currentUser={session}
+                  onDelete={handleDeleteRequest}
+                />
+                <button className="btn btn-primary fab-add" onClick={openNewRequest}><Plus size={18} /> طلب جديد</button>
+              </>
+            )}
+          </>
         ) : session.role === "engineer" ? (
           <>
             {view === "list" && (
@@ -541,9 +656,41 @@ export default function SiteInspectionApp() {
             {view === "list" && (
               <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> معاينة جديدة</button>
             )}
+            {view === "requests" && (
+              <RequestsList
+                mode="engineer"
+                items={requestsForEngineer}
+                currentUser={session}
+                onAssign={handleAssignRequest}
+              />
+            )}
           </>
         ) : view === "users" ? (
           <AdminUsers token={session.token} />
+        ) : view === "requests" || view === "requestForm" ? (
+          <>
+            {view === "requestForm" ? (
+              <RequestForm
+                createdBy={session.fullName}
+                saving={saving}
+                err={err}
+                onCancel={() => setView("requests")}
+                onSave={handleSaveRequest}
+              />
+            ) : (
+              <>
+                <RequestsList
+                  mode="admin"
+                  items={requests}
+                  currentUser={session}
+                  token={session.token}
+                  onAssign={handleAssignRequest}
+                  onDelete={handleDeleteRequest}
+                />
+                <button className="btn btn-primary fab-add" onClick={openNewRequest}><Plus size={18} /> طلب جديد</button>
+              </>
+            )}
+          </>
         ) : (
           <>
             {view === "list" && (
@@ -630,12 +777,144 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+function RequestForm({ createdBy, saving, err, onCancel, onSave }) {
+  const [siteName, setSiteName] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [clientPhone, setClientPhone] = useState("");
+  const [location, setLocation] = useState("");
+  const [notes, setNotes] = useState("");
+  const [localErr, setLocalErr] = useState("");
+
+  function submit() {
+    if (!siteName.trim() || !clientName.trim()) {
+      setLocalErr("اكتب اسم الموقع واسم العميل على الأقل");
+      return;
+    }
+    setLocalErr("");
+    onSave({
+      id: uid(),
+      siteName: siteName.trim(),
+      clientName: clientName.trim(),
+      clientPhone: clientPhone.trim(),
+      location: location.trim(),
+      notes: notes.trim(),
+      createdBy,
+      createdAt: Date.now(),
+      assignedEngineer: null,
+    });
+  }
+
+  return (
+    <div className="form-wrap">
+      <div className="eyebrow" style={{ marginBottom: 6 }}>متابعة عملاء</div>
+      <h2 style={{ margin: "0 0 18px", fontSize: 18 }}>طلب معاينة جديد</h2>
+
+      {(localErr || err) && <div className="err-banner"><AlertCircle size={15} /> {localErr || err}</div>}
+
+      <div className="form-grid">
+        <Field label="اسم الموقع" icon={Building2}>
+          <input type="text" value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder="مثال: مركز خدمة السيارات - الهرم" />
+        </Field>
+        <Field label="اسم العميل" icon={User}>
+          <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="اسم العميل" />
+        </Field>
+      </div>
+      <div className="form-grid">
+        <Field label="رقم تليفون العميل (اختياري)" icon={MessageSquare}>
+          <input type="text" value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} placeholder="رقم التليفون" />
+        </Field>
+        <Field label="العنوان / الموقع (اختياري)" icon={MapPin}>
+          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="العنوان بالتفصيل" />
+        </Field>
+      </div>
+      <Field label="ملاحظات (اختياري)" icon={ClipboardList}>
+        <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="أي تفاصيل إضافية عن الطلب" />
+      </Field>
+
+      <div className="form-actions">
+        <button className="btn btn-ghost" onClick={onCancel}>إلغاء</button>
+        <button className="btn btn-primary" disabled={saving} onClick={submit}>
+          {saving ? <Loader2 className="spin" size={15} /> : <Check size={15} />} حفظ الطلب
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RequestsList({ mode, items, currentUser, token, onAssign, onDelete }) {
+  const [engineerOptions, setEngineerOptions] = useState([]);
+
+  useEffect(() => {
+    if (mode !== "admin" || !token) return;
+    adminListEngineers(token)
+      .then((rows) => setEngineerOptions((rows || []).filter((r) => r.role === "engineer")))
+      .catch(() => {});
+  }, [mode, token]);
+
+  if (!items.length) {
+    return <p style={{ color: "var(--muted)", fontSize: 13.5, textAlign: "center", marginTop: 40 }}>لا توجد طلبات حالياً</p>;
+  }
+
+  return (
+    <div className="req-list">
+      {items.map((r) => (
+        <div className="req-row" key={r.id}>
+          <div className="req-row-head">
+            <strong>{r.siteName}</strong>
+            {r.assignedEngineer ? (
+              <span className="badge-assigned">مخصصة لـ {r.assignedEngineer}</span>
+            ) : (
+              <span className="badge-unassigned">غير مخصصة</span>
+            )}
+          </div>
+          <div className="req-row-body">
+            <span><User size={12} /> {r.clientName}</span>
+            {r.clientPhone && <span><MessageSquare size={12} /> {r.clientPhone}</span>}
+            {r.location && <span><MapPin size={12} /> {r.location}</span>}
+          </div>
+          {r.notes && <p className="req-notes">{r.notes}</p>}
+          <div className="req-row-foot">
+            <span className="req-meta">بواسطة {r.createdBy} — {fmtDate(r.createdAt)}</span>
+
+            {mode === "engineer" && !r.assignedEngineer && (
+              <button className="btn btn-primary btn-sm" onClick={() => onAssign(r.id, currentUser.fullName)}>تخصيص لنفسي</button>
+            )}
+            {mode === "engineer" && r.assignedEngineer === currentUser.fullName && (
+              <button className="btn btn-ghost btn-sm" onClick={() => onAssign(r.id, null)}>إلغاء التخصيص</button>
+            )}
+
+            {mode === "admin" && (
+              <div className="req-admin-actions">
+                <select
+                  value={r.assignedEngineer || ""}
+                  onChange={(e) => onAssign(r.id, e.target.value || null)}
+                >
+                  <option value="">بدون تخصيص</option>
+                  {engineerOptions.map((eng) => (
+                    <option key={eng.id} value={eng.full_name}>{eng.full_name}</option>
+                  ))}
+                </select>
+                <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+              </div>
+            )}
+
+            {mode === "followup" && r.createdBy === currentUser.fullName && (
+              <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AdminUsers({ token }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newFullName, setNewFullName] = useState("");
+  const [newRole, setNewRole] = useState("engineer");
   const [creating, setCreating] = useState(false);
   const [revealPassword, setRevealPassword] = useState(null);
 
@@ -658,12 +937,12 @@ function AdminUsers({ token }) {
     setCreating(true);
     setErr("");
     try {
-      const password = await adminCreateEngineer(token, newUsername.trim(), newFullName.trim());
+      const password = await adminCreateEngineer(token, newUsername.trim(), newFullName.trim(), newRole);
       setRevealPassword({ username: newUsername.trim(), password });
       setNewUsername(""); setNewFullName("");
       await load();
     } catch (e) {
-      setErr("تعذر إضافة المهندس، ممكن اسم المستخدم مستخدم بالفعل");
+      setErr("تعذر إضافة المستخدم، ممكن اسم المستخدم مستخدم بالفعل");
     } finally {
       setCreating(false);
     }
@@ -692,7 +971,7 @@ function AdminUsers({ token }) {
   return (
     <div>
       <div className="section-head">
-        <h2><Users size={16} /> إدارة المهندسين</h2>
+        <h2><Users size={16} /> إدارة المستخدمين</h2>
       </div>
 
       {err && <div className="err-banner"><AlertCircle size={16} /> {err}</div>}
@@ -700,8 +979,12 @@ function AdminUsers({ token }) {
       <div className="user-create-box">
         <input placeholder="اسم المستخدم (بالإنجليزي)" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
         <input placeholder="الاسم الكامل" value={newFullName} onChange={(e) => setNewFullName(e.target.value)} />
+        <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+          <option value="engineer">مهندس</option>
+          <option value="followup">متابعة عملاء</option>
+        </select>
         <button className="btn btn-primary" disabled={creating} onClick={handleCreate}>
-          {creating ? <Loader2 className="spin" size={15} /> : <Plus size={15} />} إضافة مهندس
+          {creating ? <Loader2 className="spin" size={15} /> : <Plus size={15} />} إضافة مستخدم
         </button>
       </div>
 
@@ -715,6 +998,7 @@ function AdminUsers({ token }) {
                 <strong>{u.full_name}</strong>
                 <span className="user-row-username">{u.username}</span>
                 {u.role === "admin" && <span className="badge-admin">أدمن</span>}
+                {u.role === "followup" && <span className="badge-assigned">متابعة عملاء</span>}
               </div>
               {u.role !== "admin" && (
                 <div className="user-row-actions">
