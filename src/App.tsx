@@ -180,6 +180,7 @@ export default function SiteInspectionApp() {
   const [requests, setRequests] = useState([]);
   const [view, setView] = useState("list"); // list | form | detail | requests | requestForm | users
   const [activeId, setActiveId] = useState(null);
+  const [requestSeed, setRequestSeed] = useState(null); // { siteName, location, requestId } | null
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [search, setSearch] = useState("");
@@ -250,6 +251,11 @@ export default function SiteInspectionApp() {
   function openNewRequest() {
     setView("requestForm");
   }
+  function openInspectionFromRequest(req) {
+    setActiveId(null);
+    setRequestSeed({ siteName: req.siteName, location: req.location, requestId: req.id });
+    setView("form");
+  }
 
   async function handleDelete(id) {
     if (!window.confirm("هل تريد حذف هذه المعاينة نهائياً؟")) return;
@@ -267,6 +273,13 @@ export default function SiteInspectionApp() {
     setErr("");
     try {
       await upsertInspection(record);
+      if (requestSeed?.requestId) {
+        const target = requests.find((r) => r.id === requestSeed.requestId);
+        if (target) {
+          await upsertRequest({ ...target, status: "done", linkedInspectionId: record.id });
+        }
+        setRequestSeed(null);
+      }
       await refreshAll();
       setView("detail");
       setActiveId(record.id);
@@ -295,10 +308,24 @@ export default function SiteInspectionApp() {
     const target = requests.find((r) => r.id === id);
     if (!target) return;
     try {
-      await upsertRequest({ ...target, assignedEngineer: engineerNameOrNull });
+      const nextStatus = engineerNameOrNull
+        ? ((!target.status || target.status === "unassigned") ? "assigned" : target.status)
+        : "unassigned";
+      await upsertRequest({ ...target, assignedEngineer: engineerNameOrNull, status: nextStatus });
       await refreshAll();
     } catch (e) {
       setErr("تعذر تحديث تخصيص الطلب");
+    }
+  }
+
+  async function handleUpdateRequestStatus(id, status) {
+    const target = requests.find((r) => r.id === id);
+    if (!target) return;
+    try {
+      await upsertRequest({ ...target, status });
+      await refreshAll();
+    } catch (e) {
+      setErr("تعذر تحديث حالة الطلب");
     }
   }
 
@@ -411,6 +438,8 @@ export default function SiteInspectionApp() {
         .req-row-head strong { font-size: 14.5px; }
         .badge-assigned { background: rgba(15,33,54,0.08); color: var(--ink); font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
         .badge-unassigned { background: rgba(232,98,44,0.12); color: var(--accent); font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
+        .badge-scheduled { background: rgba(200,150,0,0.14); color: #8a6a00; font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
+        .badge-done { background: rgba(30,140,80,0.14); color: #1b7a45; font-size: 10.5px; font-weight: 800; padding: 2px 8px; white-space: nowrap; }
         .req-row-body { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
         .req-row-body span { display: inline-flex; align-items: center; gap: 4px; }
         .req-notes { font-size: 13px; color: var(--ink); background: rgba(0,0,0,0.03); padding: 8px 10px; margin: 6px 0; }
@@ -637,10 +666,14 @@ export default function SiteInspectionApp() {
             {view === "form" && (
               <InspectionForm
                 engineerName={session.fullName}
-                initial={activeInspection}
+                initial={activeInspection || (requestSeed ? { siteName: requestSeed.siteName, location: requestSeed.location } : null)}
                 saving={saving}
                 err={err}
-                onCancel={() => setView(activeId ? "detail" : "list")}
+                onCancel={() => {
+                  const cameFromRequest = !!requestSeed;
+                  setRequestSeed(null);
+                  setView(cameFromRequest ? "requests" : activeId ? "detail" : "list");
+                }}
                 onSave={handleSave}
               />
             )}
@@ -662,6 +695,9 @@ export default function SiteInspectionApp() {
                 items={requestsForEngineer}
                 currentUser={session}
                 onAssign={handleAssignRequest}
+                onUpdateStatus={handleUpdateRequestStatus}
+                onStartInspection={openInspectionFromRequest}
+                onOpenInspection={openDetail}
               />
             )}
           </>
@@ -686,6 +722,7 @@ export default function SiteInspectionApp() {
                   token={session.token}
                   onAssign={handleAssignRequest}
                   onDelete={handleDeleteRequest}
+                  onOpenInspection={openDetail}
                 />
                 <button className="btn btn-primary fab-add" onClick={openNewRequest}><Plus size={18} /> طلب جديد</button>
               </>
@@ -801,6 +838,8 @@ function RequestForm({ createdBy, saving, err, onCancel, onSave }) {
       createdBy,
       createdAt: Date.now(),
       assignedEngineer: null,
+      status: "unassigned",
+      linkedInspectionId: null,
     });
   }
 
@@ -841,7 +880,20 @@ function RequestForm({ createdBy, saving, err, onCancel, onSave }) {
   );
 }
 
-function RequestsList({ mode, items, currentUser, token, onAssign, onDelete }) {
+const REQ_STATUS_LABEL = {
+  unassigned: "لم يتم التخصيص",
+  assigned: "مخصصة",
+  scheduled: "تم تحديد ميعاد",
+  done: "تمت",
+};
+const REQ_STATUS_CLASS = {
+  unassigned: "badge-unassigned",
+  assigned: "badge-assigned",
+  scheduled: "badge-scheduled",
+  done: "badge-done",
+};
+
+function RequestsList({ mode, items, currentUser, token, onAssign, onUpdateStatus, onStartInspection, onOpenInspection, onDelete }) {
   const [engineerOptions, setEngineerOptions] = useState([]);
 
   useEffect(() => {
@@ -857,53 +909,67 @@ function RequestsList({ mode, items, currentUser, token, onAssign, onDelete }) {
 
   return (
     <div className="req-list">
-      {items.map((r) => (
-        <div className="req-row" key={r.id}>
-          <div className="req-row-head">
-            <strong>{r.siteName}</strong>
-            {r.assignedEngineer ? (
-              <span className="badge-assigned">مخصصة لـ {r.assignedEngineer}</span>
-            ) : (
-              <span className="badge-unassigned">غير مخصصة</span>
-            )}
-          </div>
-          <div className="req-row-body">
-            <span><User size={12} /> {r.clientName}</span>
-            {r.clientPhone && <span><MessageSquare size={12} /> {r.clientPhone}</span>}
-            {r.location && <span><MapPin size={12} /> {r.location}</span>}
-          </div>
-          {r.notes && <p className="req-notes">{r.notes}</p>}
-          <div className="req-row-foot">
-            <span className="req-meta">بواسطة {r.createdBy} — {fmtDate(r.createdAt)}</span>
-
-            {mode === "engineer" && !r.assignedEngineer && (
-              <button className="btn btn-primary btn-sm" onClick={() => onAssign(r.id, currentUser.fullName)}>تخصيص لنفسي</button>
-            )}
-            {mode === "engineer" && r.assignedEngineer === currentUser.fullName && (
-              <button className="btn btn-ghost btn-sm" onClick={() => onAssign(r.id, null)}>إلغاء التخصيص</button>
-            )}
-
-            {mode === "admin" && (
-              <div className="req-admin-actions">
-                <select
-                  value={r.assignedEngineer || ""}
-                  onChange={(e) => onAssign(r.id, e.target.value || null)}
-                >
-                  <option value="">بدون تخصيص</option>
-                  {engineerOptions.map((eng) => (
-                    <option key={eng.id} value={eng.full_name}>{eng.full_name}</option>
-                  ))}
-                </select>
-                <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+      {items.map((r) => {
+        const status = r.status || (r.assignedEngineer ? "assigned" : "unassigned");
+        const isMine = mode === "engineer" && r.assignedEngineer === currentUser.fullName;
+        return (
+          <div className="req-row" key={r.id}>
+            <div className="req-row-head">
+              <strong>{r.siteName}</strong>
+              <span className={REQ_STATUS_CLASS[status]}>{REQ_STATUS_LABEL[status]}</span>
+            </div>
+            {r.assignedEngineer && (
+              <div className="req-row-body">
+                <span><Users size={12} /> {r.assignedEngineer}</span>
               </div>
             )}
+            <div className="req-row-body">
+              <span><User size={12} /> {r.clientName}</span>
+              {r.clientPhone && <span><MessageSquare size={12} /> {r.clientPhone}</span>}
+              {r.location && <span><MapPin size={12} /> {r.location}</span>}
+            </div>
+            {r.notes && <p className="req-notes">{r.notes}</p>}
+            <div className="req-row-foot">
+              <span className="req-meta">بواسطة {r.createdBy} — {fmtDate(r.createdAt)}</span>
 
-            {mode === "followup" && r.createdBy === currentUser.fullName && (
-              <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
-            )}
+              {mode === "engineer" && !r.assignedEngineer && (
+                <button className="btn btn-primary btn-sm" onClick={() => onAssign(r.id, currentUser.fullName)}>تخصيص لنفسي</button>
+              )}
+              {isMine && status === "assigned" && (
+                <button className="btn btn-ghost btn-sm" onClick={() => onUpdateStatus(r.id, "scheduled")}>تم تحديد ميعاد</button>
+              )}
+              {isMine && (status === "assigned" || status === "scheduled") && (
+                <button className="btn btn-primary btn-sm" onClick={() => onStartInspection(r)}>ابدأ المعاينة</button>
+              )}
+              {isMine && status === "done" && r.linkedInspectionId && (
+                <button className="btn btn-ghost btn-sm" onClick={() => onOpenInspection(r.linkedInspectionId)}>عرض المعاينة</button>
+              )}
+
+              {mode === "admin" && (
+                <div className="req-admin-actions">
+                  <select
+                    value={r.assignedEngineer || ""}
+                    onChange={(e) => onAssign(r.id, e.target.value || null)}
+                  >
+                    <option value="">بدون تخصيص</option>
+                    {engineerOptions.map((eng) => (
+                      <option key={eng.id} value={eng.full_name}>{eng.full_name}</option>
+                    ))}
+                  </select>
+                  {r.linkedInspectionId && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => onOpenInspection(r.linkedInspectionId)}>عرض المعاينة</button>
+                  )}
+                  <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+                </div>
+              )}
+
+              {mode === "followup" && r.createdBy === currentUser.fullName && (
+                <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
