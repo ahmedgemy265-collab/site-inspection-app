@@ -253,7 +253,7 @@ export default function SiteInspectionApp() {
   }
   function openInspectionFromRequest(req) {
     setActiveId(null);
-    setRequestSeed({ siteName: req.siteName, location: req.location, requestId: req.id });
+    setRequestSeed({ siteName: req.siteName, location: req.location, clientPhone: req.clientPhone, requestId: req.id });
     setView("form");
   }
 
@@ -531,6 +531,11 @@ export default function SiteInspectionApp() {
         }
         .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--accent); }
         .field textarea { resize: vertical; min-height: 70px; }
+        .location-link-row { display: flex; gap: 8px; }
+        .location-link-row input { flex: 1; }
+        .location-link-row button { white-space: nowrap; }
+        .location-link-preview { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--accent); text-decoration: none; }
+        .location-link-preview:hover { text-decoration: underline; }
 
         .divider { border: none; border-top: 1px dashed var(--line); margin: 20px 0; }
 
@@ -666,7 +671,7 @@ export default function SiteInspectionApp() {
             {view === "form" && (
               <InspectionForm
                 engineerName={session.fullName}
-                initial={activeInspection || (requestSeed ? { siteName: requestSeed.siteName, location: requestSeed.location } : null)}
+                initial={activeInspection || (requestSeed ? { siteName: requestSeed.siteName, location: requestSeed.location, clientPhone: requestSeed.clientPhone } : null)}
                 saving={saving}
                 err={err}
                 onCancel={() => {
@@ -1183,6 +1188,12 @@ function InspectionDetail({ insp, canEdit, onBack, onEdit, onDelete }) {
           <div className="insp-meta">
             <span className="mono"><Calendar size={12} /> {fmtDate(insp.date)}</span>
             {insp.location && <span><MapPin size={12} /> {insp.location}</span>}
+            {insp.locationLink && (
+              <a href={insp.locationLink} target="_blank" rel="noreferrer" className="mono">
+                <MapPin size={12} /> فتح على الخريطة ↗
+              </a>
+            )}
+            {insp.clientPhone && <span><MessageSquare size={12} /> {insp.clientPhone}</span>}
             <span><User size={12} /> {insp.engineerName}</span>
           </div>
         </div>
@@ -1279,6 +1290,9 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
   const [siteName, setSiteName] = useState(initial?.siteName || "");
   const [date, setDate] = useState(initial?.date || today());
   const [location, setLocation] = useState(initial?.location || "");
+  const [locationLink, setLocationLink] = useState(initial?.locationLink || "");
+  const [clientPhone, setClientPhone] = useState(initial?.clientPhone || "");
+  const [locating, setLocating] = useState(false);
   const [photos, setPhotos] = useState(initial?.photos || []);
   const [drawings, setDrawings] = useState(initial?.drawings || []);
   const [documents, setDocuments] = useState(initial?.documents || []);
@@ -1330,13 +1344,36 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
     setMeasurements((m) => m.filter((row) => row.id !== id));
   }
 
+  function useCurrentLocation() {
+    if (!navigator.geolocation) {
+      setLocalErr("المتصفح ده مش بيدعم تحديد الموقع");
+      return;
+    }
+    setLocating(true);
+    setLocalErr("");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setLocationLink(`https://www.google.com/maps?q=${latitude},${longitude}`);
+        setLocating(false);
+      },
+      () => {
+        setLocalErr("تعذر تحديد موقعك، تأكد إنك سمحت للمتصفح بالوصول للموقع");
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+
   function submit() {
     if (!siteName.trim()) { setLocalErr("من فضلك اكتب اسم الموقع"); return; }
+    if (!clientPhone.trim()) { setLocalErr("من فضلك اكتب رقم تليفون العميل"); return; }
     const record = {
       id: initial?.id || uid(),
       engineerName: initial?.engineerName || engineerName,
       siteName: siteName.trim(),
-      date, location: location.trim(),
+      date, location: location.trim(), locationLink: locationLink.trim(),
+      clientPhone: clientPhone.trim(),
       photos, drawings, documents,
       measurements: measurements.filter((m) => m.label.trim() || m.value.toString().trim()),
       requests: requests.trim(), notes: notes.trim(),
@@ -1361,8 +1398,24 @@ function InspectionForm({ engineerName, initial, saving, err, onCancel, onSave }
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
       </div>
-      <Field label="العنوان / الموقع (اختياري)" icon={MapPin}>
-        <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="العنوان بالتفصيل" />
+      <div className="form-grid">
+        <Field label="رقم تليفون العميل" icon={MessageSquare}>
+          <input type="text" value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} placeholder="رقم التليفون" />
+        </Field>
+        <Field label="العنوان / الموقع (اختياري)" icon={MapPin}>
+          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="العنوان بالتفصيل" />
+        </Field>
+      </div>
+      <Field label="لينك اللوكيشن (اختياري)" icon={MapPin}>
+        <div className="location-link-row">
+          <input type="text" value={locationLink} onChange={(e) => setLocationLink(e.target.value)} placeholder="هيتحط تلقائي أو الصق رابط جوجل مابس" />
+          <button type="button" className="btn btn-ghost btn-sm" disabled={locating} onClick={useCurrentLocation}>
+            {locating ? <Loader2 className="spin" size={14} /> : <MapPin size={14} />} موقعي الحالي
+          </button>
+        </div>
+        {locationLink && (
+          <a href={locationLink} target="_blank" rel="noreferrer" className="location-link-preview">فتح على الخريطة ↗</a>
+        )}
       </Field>
 
       <hr className="divider" />
