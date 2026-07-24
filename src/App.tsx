@@ -478,6 +478,15 @@ export default function SiteInspectionApp() {
         .badge-admin { background: rgba(232,98,44,0.12); color: var(--accent); font-size: 10.5px; font-weight: 800; padding: 2px 8px; }
 
         .req-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+        .req-subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+        .req-subtabs button {
+          border: 1.5px solid var(--line); background: var(--paper-2); color: var(--ink);
+          padding: 8px 13px; font-family: 'Tajawal'; font-size: 12.5px; font-weight: 700; cursor: pointer;
+          display: flex; align-items: center; gap: 6px; transition: all .15s;
+        }
+        .req-subtabs button.active { background: var(--bg2); color: #fff; border-color: var(--bg2); }
+        .req-subtab-count { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; background: rgba(0,0,0,0.08); padding: 1px 6px; }
+        .req-subtabs button.active .req-subtab-count { background: rgba(255,255,255,0.22); }
         .req-row { background: var(--paper-2); border: 1px solid var(--line); padding: 14px; }
         .req-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
         .req-row-head strong { font-size: 14.5px; }
@@ -983,9 +992,19 @@ const REQ_STATUS_CLASS = {
   scheduled: "badge-scheduled",
   done: "badge-done",
 };
+function reqStatusOf(r) {
+  return r.status || (r.assignedEngineer ? "assigned" : "unassigned");
+}
+const REQ_TABS = [
+  { key: "unassigned", label: "مطلوبة" },
+  { key: "assigned", label: "مخصصة" },
+  { key: "scheduled", label: "محدد لها ميعاد" },
+  { key: "done", label: "تمت" },
+];
 
 function RequestsList({ mode, items, currentUser, token, onAssign, onUpdateStatus, onStartInspection, onOpenInspection, onDelete }) {
   const [engineerOptions, setEngineerOptions] = useState([]);
+  const [subTab, setSubTab] = useState("unassigned");
 
   useEffect(() => {
     if (mode !== "admin" || !token) return;
@@ -994,73 +1013,91 @@ function RequestsList({ mode, items, currentUser, token, onAssign, onUpdateStatu
       .catch(() => {});
   }, [mode, token]);
 
-  if (!items.length) {
-    return <p style={{ color: "var(--muted)", fontSize: 13.5, textAlign: "center", marginTop: 40 }}>لا توجد طلبات حالياً</p>;
-  }
+  const byStatus = REQ_TABS.reduce((acc, t) => {
+    acc[t.key] = items.filter((r) => reqStatusOf(r) === t.key);
+    return acc;
+  }, {});
+  const visibleItems = byStatus[subTab] || [];
 
   return (
-    <div className="req-list">
-      {items.map((r) => {
-        const status = r.status || (r.assignedEngineer ? "assigned" : "unassigned");
-        const isMine = mode === "engineer" && r.assignedEngineer === currentUser.fullName;
-        return (
-          <div className="req-row" key={r.id}>
-            <div className="req-row-head">
-              <strong>{r.siteName}</strong>
-              <span className={REQ_STATUS_CLASS[status]}>{REQ_STATUS_LABEL[status]}</span>
-            </div>
-            {r.assignedEngineer && (
-              <div className="req-row-body">
-                <span><Users size={12} /> {r.assignedEngineer}</span>
-              </div>
-            )}
-            <div className="req-row-body">
-              <span><User size={12} /> {r.clientName}</span>
-              {r.clientPhone && <span><MessageSquare size={12} /> {r.clientPhone}</span>}
-              {r.location && <span><MapPin size={12} /> {r.location}</span>}
-            </div>
-            {r.notes && <p className="req-notes">{r.notes}</p>}
-            <div className="req-row-foot">
-              <span className="req-meta">بواسطة {r.createdBy} — {fmtDate(r.createdAt)}</span>
+    <div>
+      <div className="req-subtabs">
+        {REQ_TABS.map((t) => (
+          <button key={t.key} className={subTab === t.key ? "active" : ""} onClick={() => setSubTab(t.key)}>
+            {t.label} <span className="req-subtab-count">{byStatus[t.key].length}</span>
+          </button>
+        ))}
+      </div>
 
-              {mode === "engineer" && !r.assignedEngineer && (
-                <button className="btn btn-primary btn-sm" onClick={() => onAssign(r.id, currentUser.fullName)}>تخصيص لنفسي</button>
-              )}
-              {isMine && status === "assigned" && (
-                <button className="btn btn-ghost btn-sm" onClick={() => onUpdateStatus(r.id, "scheduled")}>تم تحديد ميعاد</button>
-              )}
-              {isMine && (status === "assigned" || status === "scheduled") && (
-                <button className="btn btn-primary btn-sm" onClick={() => onStartInspection(r)}>ابدأ المعاينة</button>
-              )}
-              {isMine && status === "done" && r.linkedInspectionId && (
-                <button className="btn btn-ghost btn-sm" onClick={() => onOpenInspection(r.linkedInspectionId)}>عرض المعاينة</button>
-              )}
+      {!visibleItems.length ? (
+        <p style={{ color: "var(--muted)", fontSize: 13.5, textAlign: "center", marginTop: 30 }}>
+          لا توجد طلبات في هذا التصنيف حالياً
+        </p>
+      ) : (
+        <div className="req-list">
+          {visibleItems.map((r) => {
+            const status = reqStatusOf(r);
+            const isMine = mode === "engineer" && r.assignedEngineer === currentUser.fullName;
+            return (
+              <div className="req-row" key={r.id}>
+                <div className="req-row-head">
+                  <strong>{r.siteName}</strong>
+                  <span className={REQ_STATUS_CLASS[status]}>{REQ_STATUS_LABEL[status]}</span>
+                </div>
+                {r.assignedEngineer && (
+                  <div className="req-row-body">
+                    <span><Users size={12} /> {r.assignedEngineer}</span>
+                  </div>
+                )}
+                <div className="req-row-body">
+                  <span><User size={12} /> {r.clientName}</span>
+                  {r.clientPhone && <span><MessageSquare size={12} /> {r.clientPhone}</span>}
+                  {r.location && <span><MapPin size={12} /> {r.location}</span>}
+                </div>
+                {r.notes && <p className="req-notes">{r.notes}</p>}
+                <div className="req-row-foot">
+                  <span className="req-meta">بواسطة {r.createdBy} — {fmtDate(r.createdAt)}</span>
 
-              {mode === "admin" && (
-                <div className="req-admin-actions">
-                  <select
-                    value={r.assignedEngineer || ""}
-                    onChange={(e) => onAssign(r.id, e.target.value || null)}
-                  >
-                    <option value="">بدون تخصيص</option>
-                    {engineerOptions.map((eng) => (
-                      <option key={eng.id} value={eng.full_name}>{eng.full_name}</option>
-                    ))}
-                  </select>
-                  {r.linkedInspectionId && (
+                  {mode === "engineer" && !r.assignedEngineer && (
+                    <button className="btn btn-primary btn-sm" onClick={() => onAssign(r.id, currentUser.fullName)}>تخصيص لنفسي</button>
+                  )}
+                  {isMine && status === "assigned" && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => onUpdateStatus(r.id, "scheduled")}>تم تحديد ميعاد</button>
+                  )}
+                  {isMine && (status === "assigned" || status === "scheduled") && (
+                    <button className="btn btn-primary btn-sm" onClick={() => onStartInspection(r)}>ابدأ المعاينة</button>
+                  )}
+                  {isMine && status === "done" && r.linkedInspectionId && (
                     <button className="btn btn-ghost btn-sm" onClick={() => onOpenInspection(r.linkedInspectionId)}>عرض المعاينة</button>
                   )}
-                  <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
-                </div>
-              )}
 
-              {mode === "followup" && r.createdBy === currentUser.fullName && (
-                <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
-              )}
-            </div>
-          </div>
-        );
-      })}
+                  {mode === "admin" && (
+                    <div className="req-admin-actions">
+                      <select
+                        value={r.assignedEngineer || ""}
+                        onChange={(e) => onAssign(r.id, e.target.value || null)}
+                      >
+                        <option value="">بدون تخصيص</option>
+                        {engineerOptions.map((eng) => (
+                          <option key={eng.id} value={eng.full_name}>{eng.full_name}</option>
+                        ))}
+                      </select>
+                      {r.linkedInspectionId && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => onOpenInspection(r.linkedInspectionId)}>عرض المعاينة</button>
+                      )}
+                      <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+                    </div>
+                  )}
+
+                  {mode === "followup" && r.createdBy === currentUser.fullName && (
+                    <button className="btn btn-danger btn-sm" onClick={() => onDelete(r.id)}><Trash2 size={13} /></button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
