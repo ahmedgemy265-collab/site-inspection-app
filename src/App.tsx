@@ -98,6 +98,21 @@ async function deleteRequestRow(id) {
   await sbFetch(`requests?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+async function fetchAllQuotes() {
+  const rows = await sbFetch("quotes?select=id,data&order=created_at.desc");
+  return (rows || []).map((r) => ({ ...r.data, id: r.id }));
+}
+async function upsertQuote(record) {
+  await sbFetch("quotes", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify([{ id: record.id, data: record }]),
+  });
+}
+async function deleteQuoteRow(id) {
+  await sbFetch(`quotes?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 const DOCS_BUCKET = "inspection-files";
 async function uploadDocumentToStorage(file) {
   const ext = (file.name.split(".").pop() || "bin").toLowerCase();
@@ -144,8 +159,8 @@ async function logoutRequest(token) {
 async function adminListEngineers(token) {
   return sbRpc("admin_list_engineers", { p_token: token });
 }
-async function adminCreateEngineer(token, username, fullName) {
-  return sbRpc("admin_create_engineer", { p_token: token, p_username: username, p_full_name: fullName });
+async function adminCreateEngineer(token, username, fullName, role) {
+  return sbRpc("admin_create_engineer", { p_token: token, p_username: username, p_full_name: fullName, p_role: role });
 }
 async function adminResetPassword(token, targetId) {
   return sbRpc("admin_reset_password", { p_token: token, p_target_id: targetId });
@@ -178,7 +193,8 @@ export default function SiteInspectionApp() {
   const [booting, setBooting] = useState(true);
   const [inspections, setInspections] = useState([]);
   const [requests, setRequests] = useState([]);
-  const [view, setView] = useState("list"); // list | form | detail | requests | requestForm | users
+  const [quotes, setQuotes] = useState([]);
+  const [view, setView] = useState("list"); // list | form | detail | requests | requestForm | users | quotes | quoteDetail
   const [activeId, setActiveId] = useState(null);
   const [requestSeed, setRequestSeed] = useState(null); // { siteName, location, requestId } | null
   const [saving, setSaving] = useState(false);
@@ -219,6 +235,12 @@ export default function SiteInspectionApp() {
     } catch (e) {
       // silent: not all roles depend on requests loading successfully on first paint
     }
+    try {
+      const qs = await fetchAllQuotes();
+      setQuotes(qs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    } catch (e) {
+      // silent: not all roles depend on quotes loading successfully on first paint
+    }
   }, []);
 
   async function handleLogin(username, password) {
@@ -243,6 +265,10 @@ export default function SiteInspectionApp() {
   function openDetail(id) {
     setActiveId(id);
     setView("detail");
+  }
+  function openQuoteDetail(id) {
+    setActiveId(id);
+    setView("quoteDetail");
   }
   function openEdit(id) {
     setActiveId(id);
@@ -272,7 +298,12 @@ export default function SiteInspectionApp() {
     setSaving(true);
     setErr("");
     try {
-      await upsertInspection(record);
+      // كل معاينة يتم حفظها (جديدة أو تعديل معاينة قديمة) بتتحول لطلب عرض سعر في "المكتب الفني"
+      const wasLegacyInspection = !!activeId && inspections.some((i) => i.id === activeId);
+      await upsertQuote(record);
+      if (wasLegacyInspection) {
+        await deleteInspectionRow(activeId);
+      }
       if (requestSeed?.requestId) {
         const target = requests.find((r) => r.id === requestSeed.requestId);
         if (target) {
@@ -281,12 +312,23 @@ export default function SiteInspectionApp() {
         setRequestSeed(null);
       }
       await refreshAll();
-      setView("detail");
+      setView("quoteDetail");
       setActiveId(record.id);
     } catch (e) {
       setErr("حدث خطأ أثناء الحفظ، تأكد من الإنترنت وحاول مرة أخرى");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDeleteQuote(id) {
+    if (!window.confirm("هل تريد حذف طلب عرض السعر ده نهائياً؟")) return;
+    try {
+      await deleteQuoteRow(id);
+      await refreshAll();
+      setView("quotes");
+    } catch (e) {
+      setErr("تعذر حذف طلب عرض السعر، حاول مرة أخرى");
     }
   }
 
@@ -351,6 +393,9 @@ export default function SiteInspectionApp() {
   );
 
   const activeInspection = activeId ? inspections.find((i) => i.id === activeId) : null;
+  const activeQuote = activeId ? quotes.find((q) => q.id === activeId) : null;
+  // true إذا كان الفورم مفتوح لإنشاء/تعديل طلب عرض سعر (مش تعديل معاينة قديمة لسه موجودة في inspections)
+  const formIsQuoteContext = view === "form" && !(activeId && inspections.some((i) => i.id === activeId));
 
   return (
     <div className="app-root" dir="rtl">
@@ -603,11 +648,17 @@ export default function SiteInspectionApp() {
             <div className="user-bar">
               {session.role === "admin" && (
                 <div className="role-switch">
-                  <button className={view !== "users" && view !== "requests" && view !== "requestForm" ? "active" : ""} onClick={() => setView("list")}>
+                  <button
+                    className={(view !== "users" && view !== "requests" && view !== "requestForm" && view !== "quotes" && view !== "quoteDetail" && !formIsQuoteContext) ? "active" : ""}
+                    onClick={() => setView("list")}
+                  >
                     <LayoutDashboard size={14} /> المعاينات
                   </button>
                   <button className={view === "requests" || view === "requestForm" ? "active" : ""} onClick={() => setView("requests")}>
                     <ClipboardList size={14} /> الطلبات
+                  </button>
+                  <button className={(view === "quotes" || view === "quoteDetail" || formIsQuoteContext) ? "active" : ""} onClick={() => setView("quotes")}>
+                    <FileText size={14} /> المكتب الفني
                   </button>
                   <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}>
                     <Users size={14} /> المهندسين
@@ -616,11 +667,17 @@ export default function SiteInspectionApp() {
               )}
               {session.role === "engineer" && (
                 <div className="role-switch">
-                  <button className={view !== "requests" ? "active" : ""} onClick={() => setView("list")}>
+                  <button
+                    className={(view !== "requests" && view !== "quotes" && view !== "quoteDetail" && !formIsQuoteContext) ? "active" : ""}
+                    onClick={() => setView("list")}
+                  >
                     <LayoutDashboard size={14} /> معايناتي
                   </button>
                   <button className={view === "requests" ? "active" : ""} onClick={() => setView("requests")}>
                     <ClipboardList size={14} /> طلبات المعاينة
+                  </button>
+                  <button className={(view === "quotes" || view === "quoteDetail" || formIsQuoteContext) ? "active" : ""} onClick={() => setView("quotes")}>
+                    <FileText size={14} /> المكتب الفني
                   </button>
                 </div>
               )}
@@ -671,13 +728,16 @@ export default function SiteInspectionApp() {
             {view === "form" && (
               <InspectionForm
                 engineerName={session.fullName}
-                initial={activeInspection || (requestSeed ? { siteName: requestSeed.siteName, location: requestSeed.location, clientPhone: requestSeed.clientPhone } : null)}
+                initial={activeInspection || activeQuote || (requestSeed ? { siteName: requestSeed.siteName, location: requestSeed.location, clientPhone: requestSeed.clientPhone } : null)}
                 saving={saving}
                 err={err}
                 onCancel={() => {
                   const cameFromRequest = !!requestSeed;
                   setRequestSeed(null);
-                  setView(cameFromRequest ? "requests" : activeId ? "detail" : "list");
+                  if (cameFromRequest) { setView("requests"); return; }
+                  if (activeId && inspections.some((i) => i.id === activeId)) { setView("detail"); return; }
+                  if (activeId && quotes.some((q) => q.id === activeId)) { setView("quoteDetail"); return; }
+                  setView("quotes");
                 }}
                 onSave={handleSave}
               />
@@ -691,9 +751,6 @@ export default function SiteInspectionApp() {
                 onDelete={() => handleDelete(activeInspection.id)}
               />
             )}
-            {view === "list" && (
-              <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> معاينة جديدة</button>
-            )}
             {view === "requests" && (
               <RequestsList
                 mode="engineer"
@@ -702,7 +759,22 @@ export default function SiteInspectionApp() {
                 onAssign={handleAssignRequest}
                 onUpdateStatus={handleUpdateRequestStatus}
                 onStartInspection={openInspectionFromRequest}
-                onOpenInspection={openDetail}
+                onOpenInspection={openQuoteDetail}
+              />
+            )}
+            {view === "quotes" && (
+              <>
+                <QuotesList items={quotes} onOpen={openQuoteDetail} />
+                <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> طلب عرض سعر جديد</button>
+              </>
+            )}
+            {view === "quoteDetail" && activeQuote && (
+              <InspectionDetail
+                insp={activeQuote}
+                canEdit={activeQuote.engineerName === session.fullName}
+                onBack={() => setView("quotes")}
+                onEdit={() => openEdit(activeQuote.id)}
+                onDelete={() => handleDeleteQuote(activeQuote.id)}
               />
             )}
           </>
@@ -727,12 +799,25 @@ export default function SiteInspectionApp() {
                   token={session.token}
                   onAssign={handleAssignRequest}
                   onDelete={handleDeleteRequest}
-                  onOpenInspection={openDetail}
+                  onOpenInspection={openQuoteDetail}
                 />
                 <button className="btn btn-primary fab-add" onClick={openNewRequest}><Plus size={18} /> طلب جديد</button>
               </>
             )}
           </>
+        ) : view === "quotes" ? (
+          <>
+            <QuotesList items={quotes} onOpen={openQuoteDetail} />
+            <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> طلب عرض سعر جديد</button>
+          </>
+        ) : view === "quoteDetail" && activeQuote ? (
+          <InspectionDetail
+            insp={activeQuote}
+            canEdit={true}
+            onBack={() => setView("quotes")}
+            onEdit={() => openEdit(activeQuote.id)}
+            onDelete={() => handleDeleteQuote(activeQuote.id)}
+          />
         ) : (
           <>
             {view === "list" && (
@@ -745,9 +830,6 @@ export default function SiteInspectionApp() {
                 onOpen={openDetail}
               />
             )}
-            {view === "list" && (
-              <button className="btn btn-primary fab-add" onClick={openNew}><Plus size={18} /> معاينة جديدة</button>
-            )}
             {view === "detail" && activeInspection && (
               <InspectionDetail
                 insp={activeInspection}
@@ -759,11 +841,15 @@ export default function SiteInspectionApp() {
             )}
             {view === "form" && (
               <InspectionForm
-                engineerName={activeInspection?.engineerName || session.fullName}
-                initial={activeInspection}
+                engineerName={activeInspection?.engineerName || activeQuote?.engineerName || session.fullName}
+                initial={activeInspection || activeQuote}
                 saving={saving}
                 err={err}
-                onCancel={() => setView(activeId ? "detail" : "list")}
+                onCancel={() => {
+                  if (activeId && inspections.some((i) => i.id === activeId)) { setView("detail"); return; }
+                  if (activeId && quotes.some((q) => q.id === activeId)) { setView("quoteDetail"); return; }
+                  setView("quotes");
+                }}
                 onSave={handleSave}
               />
             )}
@@ -1108,12 +1194,32 @@ function EngineerList({ engineerName, items, onOpen, onSwitchUser }) {
       {items.length === 0 ? (
         <div className="empty-state">
           <ClipboardList size={40} />
-          <p>مفيش معاينات مسجلة لسه</p>
-          <p>دوس على "معاينة جديدة" علشان تبدأ</p>
+          <p>مفيش معاينات قديمة مسجلة هنا</p>
         </div>
       ) : (
         <div className="card-list">
           {items.map((i) => <InspCard key={i.id} insp={i} onClick={() => onOpen(i.id)} />)}
+        </div>
+      )}
+    </>
+  );
+}
+
+function QuotesList({ items, onOpen }) {
+  return (
+    <>
+      <div className="section-head">
+        <h2><FileText size={16} /> المكتب الفني — طلبات عروض الأسعار</h2>
+      </div>
+      {items.length === 0 ? (
+        <div className="empty-state">
+          <FileText size={40} />
+          <p>مفيش طلبات عروض أسعار مسجلة لسه</p>
+          <p>دوس على "طلب عرض سعر جديد" علشان تبدأ</p>
+        </div>
+      ) : (
+        <div className="card-list">
+          {items.map((q) => <InspCard key={q.id} insp={q} onClick={() => onOpen(q.id)} />)}
         </div>
       )}
     </>
