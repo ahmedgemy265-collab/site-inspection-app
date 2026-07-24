@@ -195,6 +195,7 @@ export default function SiteInspectionApp() {
   const [requests, setRequests] = useState([]);
   const [quotes, setQuotes] = useState([]);
   const [view, setView] = useState("list"); // list | form | detail | requests | requestForm | users | quotes | quoteDetail
+  const [returnView, setReturnView] = useState("list");
   const [activeId, setActiveId] = useState(null);
   const [requestSeed, setRequestSeed] = useState(null); // { siteName, location, requestId } | null
   const [saving, setSaving] = useState(false);
@@ -263,12 +264,21 @@ export default function SiteInspectionApp() {
     setView("form");
   }
   function openDetail(id) {
+    setReturnView(view);
     setActiveId(id);
     setView("detail");
   }
   function openQuoteDetail(id) {
+    setReturnView(view);
     setActiveId(id);
     setView("quoteDetail");
+  }
+  function openItemDetail(id) {
+    if (inspections.some((i) => i.id === id)) {
+      openDetail(id);
+      return;
+    }
+    openQuoteDetail(id);
   }
   function openEdit(id) {
     setActiveId(id);
@@ -381,13 +391,9 @@ export default function SiteInspectionApp() {
     }
   }
 
-  const myInspections = inspections.filter((i) => i.engineerName === session?.fullName);
-  const engineers = Array.from(new Set(inspections.map((i) => i.engineerName))).filter(Boolean);
-  const filteredForAdmin = inspections.filter((i) => {
-    const matchSearch = !search || i.siteName?.toLowerCase().includes(search.toLowerCase());
-    const matchEng = engFilter === "all" || i.engineerName === engFilter;
-    return matchSearch && matchEng;
-  });
+  const myItems = [...inspections, ...quotes]
+    .filter((i) => i.engineerName === session?.fullName)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const requestsForEngineer = requests.filter(
     (r) => !r.assignedEngineer || r.assignedEngineer === session?.fullName
   );
@@ -729,8 +735,8 @@ export default function SiteInspectionApp() {
             {view === "list" && (
               <EngineerList
                 engineerName={session.fullName}
-                items={myInspections}
-                onOpen={openDetail}
+                items={myItems}
+                onOpen={openItemDetail}
                 onSwitchUser={handleLogout}
               />
             )}
@@ -768,7 +774,7 @@ export default function SiteInspectionApp() {
                 onAssign={handleAssignRequest}
                 onUpdateStatus={handleUpdateRequestStatus}
                 onStartInspection={openInspectionFromRequest}
-                onOpenInspection={openQuoteDetail}
+                onOpenInspection={openItemDetail}
               />
             )}
             {view === "quotes" && (
@@ -781,7 +787,7 @@ export default function SiteInspectionApp() {
               <InspectionDetail
                 insp={activeQuote}
                 canEdit={activeQuote.engineerName === session.fullName}
-                onBack={() => setView("quotes")}
+                onBack={() => setView(returnView)}
                 onEdit={() => openEdit(activeQuote.id)}
                 onDelete={() => handleDeleteQuote(activeQuote.id)}
               />
@@ -808,7 +814,7 @@ export default function SiteInspectionApp() {
                   token={session.token}
                   onAssign={handleAssignRequest}
                   onDelete={handleDeleteRequest}
-                  onOpenInspection={openQuoteDetail}
+                  onOpenInspection={openItemDetail}
                 />
                 <button className="btn btn-primary fab-add" onClick={openNewRequest}><Plus size={18} /> طلب جديد</button>
               </>
@@ -823,7 +829,7 @@ export default function SiteInspectionApp() {
           <InspectionDetail
             insp={activeQuote}
             canEdit={true}
-            onBack={() => setView("quotes")}
+            onBack={() => setView(returnView)}
             onEdit={() => openEdit(activeQuote.id)}
             onDelete={() => handleDeleteQuote(activeQuote.id)}
           />
@@ -831,12 +837,12 @@ export default function SiteInspectionApp() {
           <>
             {view === "list" && (
               <AdminDashboard
-                items={inspections}
-                filtered={filteredForAdmin}
-                engineers={engineers}
+                inspections={inspections}
+                quotes={quotes}
+                token={session.token}
                 search={search} setSearch={setSearch}
                 engFilter={engFilter} setEngFilter={setEngFilter}
-                onOpen={openDetail}
+                onOpen={openItemDetail}
               />
             )}
             {view === "detail" && activeInspection && (
@@ -1231,7 +1237,7 @@ function EngineerList({ engineerName, items, onOpen, onSwitchUser }) {
       {items.length === 0 ? (
         <div className="empty-state">
           <ClipboardList size={40} />
-          <p>مفيش معاينات قديمة مسجلة هنا</p>
+          <p>مفيش معاينات منفذة من خلالك لسه</p>
         </div>
       ) : (
         <div className="card-list">
@@ -1284,16 +1290,49 @@ function InspCard({ insp, onClick }) {
   );
 }
 
-function AdminDashboard({ items, filtered, engineers, search, setSearch, engFilter, setEngFilter, onOpen }) {
+function AdminDashboard({ inspections, quotes, token, search, setSearch, engFilter, setEngFilter, onOpen }) {
+  const [engineerOptions, setEngineerOptions] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await adminListEngineers(token);
+        if (!cancelled) setEngineerOptions((rows || []).filter((e) => e.role === "engineer"));
+      } catch {
+        // silent: dropdown just falls back to an empty roster on failure
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const isEngineerMode = engFilter !== "all";
+  const legacyEngineerNames = Array.from(new Set(inspections.map((i) => i.engineerName))).filter(Boolean);
+
+  const matchesSearch = (i) => !search || i.siteName?.toLowerCase().includes(search.toLowerCase());
+  const filteredInspections = inspections.filter(matchesSearch);
+
+  const combinedForEngineer = [...inspections, ...quotes].filter((i) => i.engineerName === engFilter);
+  const combinedForEngineerFiltered = combinedForEngineer.filter(matchesSearch);
+
   return (
     <>
-      <div className="stats-row">
-        <div className="stat-card"><div className="num mono">{items.length}</div><div className="lbl">إجمالي المعاينات</div></div>
-        <div className="stat-card"><div className="num mono">{engineers.length}</div><div className="lbl">عدد المهندسين</div></div>
-        <div className="stat-card"><div className="num mono">{new Set(items.map(i => i.siteName)).size}</div><div className="lbl">عدد المواقع</div></div>
-      </div>
+      {!isEngineerMode && (
+        <div className="stats-row">
+          <div className="stat-card"><div className="num mono">{inspections.length}</div><div className="lbl">إجمالي المعاينات</div></div>
+          <div className="stat-card"><div className="num mono">{legacyEngineerNames.length}</div><div className="lbl">عدد المهندسين</div></div>
+          <div className="stat-card"><div className="num mono">{new Set(inspections.map(i => i.siteName)).size}</div><div className="lbl">عدد المواقع</div></div>
+        </div>
+      )}
 
-      <div className="section-head"><h2><LayoutDashboard size={16} /> كل المعاينات</h2></div>
+      {isEngineerMode ? (
+        <div className="section-head">
+          <h2><LayoutDashboard size={16} /> معاينات المهندس — {engFilter}</h2>
+          <span className="badge-admin">{combinedForEngineer.length}</span>
+        </div>
+      ) : (
+        <div className="section-head"><h2><LayoutDashboard size={16} /> كل المعاينات</h2></div>
+      )}
 
       <div className="filters">
         <div className="search-box">
@@ -1302,19 +1341,32 @@ function AdminDashboard({ items, filtered, engineers, search, setSearch, engFilt
         </div>
         <select value={engFilter} onChange={(e) => setEngFilter(e.target.value)}>
           <option value="all">كل المهندسين</option>
-          {engineers.map((e) => <option key={e} value={e}>{e}</option>)}
+          {engineerOptions.map((e) => <option key={e.id} value={e.full_name}>{e.full_name}</option>)}
         </select>
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="empty-state">
-          <Users size={40} />
-          <p>{items.length === 0 ? "لسه مفيش معاينات مرفوعة من الفريق" : "مفيش نتائج مطابقة"}</p>
-        </div>
+      {isEngineerMode ? (
+        combinedForEngineerFiltered.length === 0 ? (
+          <div className="empty-state">
+            <Users size={40} />
+            <p>{combinedForEngineer.length === 0 ? "لسه مفيش معاينات مسجلة لهذا المهندس" : "مفيش نتائج مطابقة"}</p>
+          </div>
+        ) : (
+          <div className="card-list">
+            {combinedForEngineerFiltered.map((i) => <InspCard key={i.id} insp={i} onClick={() => onOpen(i.id)} />)}
+          </div>
+        )
       ) : (
-        <div className="card-list">
-          {filtered.map((i) => <InspCard key={i.id} insp={i} onClick={() => onOpen(i.id)} />)}
-        </div>
+        filteredInspections.length === 0 ? (
+          <div className="empty-state">
+            <Users size={40} />
+            <p>{inspections.length === 0 ? "لسه مفيش معاينات مرفوعة من الفريق" : "مفيش نتائج مطابقة"}</p>
+          </div>
+        ) : (
+          <div className="card-list">
+            {filteredInspections.map((i) => <InspCard key={i.id} insp={i} onClick={() => onOpen(i.id)} />)}
+          </div>
+        )
       )}
     </>
   );
