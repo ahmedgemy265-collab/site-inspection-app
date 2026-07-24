@@ -453,7 +453,7 @@ export default function SiteInspectionApp() {
         .brand-text h1 { margin: 0; font-size: 17px; font-weight: 900; letter-spacing: 0.2px; }
         .brand-text p { margin: 2px 0 0; font-size: 11px; color: rgba(255,255,255,0.6); font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.5px; }
 
-        .role-switch { display: flex; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); padding: 3px; gap: 3px; }
+        .role-switch { display: flex; flex-wrap: wrap; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); padding: 3px; gap: 3px; }
         .role-switch button {
           border: none; background: transparent; color: rgba(255,255,255,0.65);
           padding: 7px 14px; font-family: 'Tajawal'; font-size: 13px; font-weight: 700; cursor: pointer;
@@ -461,7 +461,7 @@ export default function SiteInspectionApp() {
         }
         .role-switch button.active { background: var(--accent); color: #fff; }
 
-        .user-bar { display: flex; align-items: center; gap: 10px; }
+        .user-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
         .user-name { color: rgba(255,255,255,0.85); font-size: 13px; font-weight: 700; }
         .btn-sm { padding: 6px 11px; font-size: 12.5px; }
 
